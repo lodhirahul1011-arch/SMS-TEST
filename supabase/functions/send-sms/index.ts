@@ -5,6 +5,10 @@ interface SendSmsRequest {
   number: string;
   sender_id?: string;
   message?: string;
+  order_id?: string;
+  awb?: string;
+  otp?: string;
+  valid_till?: string;
 }
 
 interface SmsSettings {
@@ -32,8 +36,21 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
+const maskValue = (value?: string | null) => {
+  if (!value) return 'missing';
+  if (value.length <= 8) return `${value.slice(0, 2)}***`;
+  return `${value.slice(0, 4)}***${value.slice(-4)}`;
+};
+
+const buildSmsUrlForLog = (url: string, apiKey: string) => {
+  return url.replace(apiKey, 'HIDDEN_API_KEY');
+};
+
 Deno.serve(async (req: Request) => {
+  const requestId = crypto.randomUUID();
+
   if (req.method === "OPTIONS") {
+    console.log(`[send-sms:${requestId}] CORS preflight handled`);
     return new Response(null, {
       status: 200,
       headers: corsHeaders,
@@ -41,16 +58,34 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    console.log(`[send-sms:${requestId}] Request received`, {
+      method: req.method,
+      url: req.url,
+      contentType: req.headers.get('content-type'),
+      hasAuthorization: Boolean(req.headers.get('authorization')),
+      userAgent: req.headers.get('user-agent')
+    });
+
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    console.log(`[send-sms:${requestId}] Supabase env check`, {
+      supabaseUrl: supabaseUrl || 'missing',
+      serviceRoleKey: maskValue(supabaseServiceKey)
+    });
+
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: savedSettings } = await supabase
+    const { data: savedSettings, error: settingsError } = await supabase
       .from('sms_settings')
       .select('api_key, sender_id, template_id, base_url')
       .order('updated_at', { ascending: false })
       .limit(1)
       .maybeSingle<SmsSettings>();
+
+    if (settingsError) {
+      console.error(`[send-sms:${requestId}] Failed to load sms_settings`, settingsError);
+    }
 
     // Prefer Supabase secrets, then fall back to the settings saved from the app UI.
     const apiKey = Deno.env.get('SMS_API_KEY') || savedSettings?.api_key || '';
@@ -60,6 +95,22 @@ Deno.serve(async (req: Request) => {
 
     const payload: SendSmsRequest = await req.json();
     const senderId = (payload.sender_id || defaultSenderId || '').trim();
+
+    console.log(`[send-sms:${requestId}] SMS config and payload`, {
+      hasSavedSettings: Boolean(savedSettings),
+      apiKey: maskValue(apiKey),
+      templateId: templateId || 'missing',
+      baseUrl: baseUrl || 'missing',
+      defaultSenderId,
+      requestedSenderId: payload.sender_id || 'missing',
+      finalSenderId: senderId,
+      rawNumber: payload.number || 'missing',
+      messageLength: payload.message?.length || 0,
+      orderId: payload.order_id,
+      awb: payload.awb,
+      otp: payload.otp,
+      validTill: payload.valid_till
+    });
 
     // Normalize phone number
     const rawNumber = (payload.number || '').trim();
@@ -76,7 +127,19 @@ Deno.serve(async (req: Request) => {
       number = digits;
     }
 
+    console.log(`[send-sms:${requestId}] Number normalization`, {
+      rawNumber,
+      digits,
+      normalizedNumber: number
+    });
+
     if (number.length !== 12 || !number.startsWith('91')) {
+      console.warn(`[send-sms:${requestId}] Invalid mobile number`, {
+        rawNumber,
+        digits,
+        normalizedNumber: number
+      });
+
       return new Response(
         JSON.stringify({
           success: false,
@@ -92,8 +155,15 @@ Deno.serve(async (req: Request) => {
 
     // Check if API credentials are configured
     if (!apiKey || !baseUrl) {
+      console.error(`[send-sms:${requestId}] SMS API not configured`, {
+        hasApiKey: Boolean(apiKey),
+        hasBaseUrl: Boolean(baseUrl),
+        templateId: templateId || 'missing',
+        senderId
+      });
+
       // Log the attempt without actually sending
-      const { data: logEntry } = await supabase
+      const { data: logEntry, error: logError } = await supabase
         .from('sms_logs')
         .insert({
           number: number,
@@ -104,6 +174,10 @@ Deno.serve(async (req: Request) => {
         })
         .select()
         .single();
+
+      if (logError) {
+        console.error(`[send-sms:${requestId}] Failed to save missing-config log`, logError);
+      }
 
       return new Response(
         JSON.stringify({
@@ -121,9 +195,13 @@ Deno.serve(async (req: Request) => {
     // Build SMS API URL for Fortius
     const smsUrl = `${baseUrl}?apikey=${encodeURIComponent(apiKey)}&senderid=${encodeURIComponent(senderId)}&templateid=${encodeURIComponent(templateId)}&number=${encodeURIComponent(number)}&message=${encodeURIComponent(payload.message || '')}`;
 
-    console.log('Sending SMS to:', number);
-    console.log('SMS URL:', smsUrl.replace(apiKey, 'HIDDEN'));
-    console.log('Message:', payload.message);
+    console.log(`[send-sms:${requestId}] Sending SMS provider request`, {
+      number,
+      senderId,
+      templateId: templateId || 'missing',
+      messageLength: payload.message?.length || 0,
+      smsUrl: buildSmsUrlForLog(smsUrl, apiKey)
+    });
 
     // Send SMS via Fortius provider API
     let smsResponse;
@@ -135,12 +213,16 @@ Deno.serve(async (req: Request) => {
         }
       });
     } catch (fetchError) {
-      console.error('Fetch error:', fetchError);
+      console.error(`[send-sms:${requestId}] Provider fetch error`, fetchError);
       throw fetchError;
     }
 
     const responseText = await smsResponse.text();
-    console.log('API Response:', responseText);
+    console.log(`[send-sms:${requestId}] Provider raw response`, {
+      httpStatus: smsResponse.status,
+      ok: smsResponse.ok,
+      responseText
+    });
 
     let providerResponse: ProviderResponse;
 
@@ -165,10 +247,16 @@ Deno.serve(async (req: Request) => {
       responseLower.includes('accepted')
     );
 
-    console.log('SMS Send Result:', { isSuccess, status: smsResponse.status, providerResponse });
+    console.log(`[send-sms:${requestId}] SMS send result`, {
+      isSuccess,
+      httpStatus: smsResponse.status,
+      providerStatus,
+      providerCode,
+      providerResponse
+    });
 
     // Log to database
-    const { data: logEntry } = await supabase
+    const { data: logEntry, error: logError } = await supabase
       .from('sms_logs')
       .insert({
         number: number,
@@ -180,6 +268,15 @@ Deno.serve(async (req: Request) => {
       })
       .select()
       .single();
+
+    if (logError) {
+      console.error(`[send-sms:${requestId}] Failed to save sms_logs row`, logError);
+    } else {
+      console.log(`[send-sms:${requestId}] Saved sms_logs row`, {
+        logId: logEntry?.id,
+        status: isSuccess ? 'success' : 'failed'
+      });
+    }
 
     return new Response(
       JSON.stringify({
@@ -194,7 +291,8 @@ Deno.serve(async (req: Request) => {
         number: number,
         sender_id: senderId,
         provider_response: providerResponse,
-        log_id: logEntry?.id
+        log_id: logEntry?.id,
+        request_id: requestId
       }),
       {
         status: 200,
@@ -203,13 +301,14 @@ Deno.serve(async (req: Request) => {
     );
 
   } catch (error) {
-    console.error('Error in send-sms function:', error);
+    console.error(`[send-sms:${requestId}] Error in send-sms function`, error);
     const message = error instanceof Error ? error.message : String(error);
     return new Response(
       JSON.stringify({
         success: false,
         error: 'Internal server error',
-        details: message
+        details: message,
+        request_id: requestId
       }),
       {
         status: 500,

@@ -20,6 +20,21 @@ interface SmsLog {
 
 const savedPhoneNumberKey = 'sms-lab-phone-number';
 
+const maskValue = (value?: string) => {
+  if (!value) return 'missing';
+  if (value.length <= 8) return `${value.slice(0, 2)}***`;
+  return `${value.slice(0, 4)}***${value.slice(-4)}`;
+};
+
+const safeJson = async (response: Response) => {
+  const text = await response.text();
+  try {
+    return { parsed: JSON.parse(text), raw: text };
+  } catch {
+    return { parsed: null, raw: text };
+  }
+};
+
 function App() {
   const [savedPhoneNumber, setSavedPhoneNumber] = useState(() => localStorage.getItem(savedPhoneNumberKey) || '');
   const [number, setNumber] = useState(() => localStorage.getItem(savedPhoneNumberKey) || '');
@@ -36,6 +51,7 @@ function App() {
   const [deliveryLoading, setDeliveryLoading] = useState(false);
   const [deliverySenderId, setDeliverySenderId] = useState('GNETRA');
   const [deliveryTime, setDeliveryTime] = useState('1pm');
+  const [deliveryOtpLength, setDeliveryOtpLength] = useState<4 | 6>(4);
 
   useEffect(() => {
     fetchLogs();
@@ -44,6 +60,15 @@ function App() {
     const envSenderId = import.meta.env.VITE_SMS_SENDER_ID;
     const envTemplateId = import.meta.env.VITE_SMS_TEMPLATE_ID;
     const envBaseUrl = import.meta.env.VITE_SMS_BASE_URL;
+
+    console.log('[SMS App] Runtime config check', {
+      supabaseUrl: import.meta.env.VITE_SUPABASE_URL || 'missing',
+      anonKey: maskValue(import.meta.env.VITE_SUPABASE_ANON_KEY),
+      smsApiKey: maskValue(envApiKey),
+      smsSenderId: envSenderId || 'missing',
+      smsTemplateId: envTemplateId || 'missing',
+      smsBaseUrl: envBaseUrl || 'missing'
+    });
 
     if (envApiKey) setApiKey(envApiKey);
     if (envSenderId) setSenderId(envSenderId);
@@ -65,20 +90,26 @@ function App() {
   const isDeliveryNumberSaved = deliveryNumber.trim() !== '' && deliveryNumber.trim() === savedPhoneNumber;
 
   const fetchLogs = async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('sms_logs')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(20);
+    if (error) {
+      console.error('[SMS App] Failed to fetch SMS logs', error);
+    }
     if (data) setLogs(data);
   };
 
   const fetchSettings = async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('sms_settings')
       .select('*')
       .limit(1)
       .maybeSingle();
+    if (error) {
+      console.error('[SMS App] Failed to fetch SMS settings', error);
+    }
     if (data) {
       setApiKey(data.api_key || '');
       setSenderId(data.sender_id || 'GNETRA');
@@ -124,29 +155,46 @@ function App() {
 
     setLoading(true);
     try {
+      const requestBody = {
+        number: number.trim(),
+        sender_id: senderId.trim() || 'GNETRA',
+        message: message.trim()
+      };
+      const endpoint = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`;
+
+      console.log('[SMS App] Sending manual SMS request', {
+        endpoint,
+        number: requestBody.number,
+        senderId: requestBody.sender_id,
+        messageLength: requestBody.message.length,
+        hasAnonKey: Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY)
+      });
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
         },
-        body: JSON.stringify({
-          number: number.trim(),
-          sender_id: senderId.trim() || 'GNETRA',
-          message: message.trim()
-        })
+        body: JSON.stringify(requestBody)
       });
 
-      const result = await response.json();
+      const { parsed: result, raw } = await safeJson(response);
+      console.log('[SMS App] Manual SMS response', {
+        httpStatus: response.status,
+        ok: response.ok,
+        result,
+        raw
+      });
 
-      if (result.success) {
+      if (result?.success) {
         setMessage('');
         fetchLogs();
       } else {
-        alert(result.error || 'Failed to send SMS');
+        alert(result?.error || raw || 'Failed to send SMS');
       }
     } catch (error) {
-      console.error('Error sending SMS:', error);
+      console.error('[SMS App] Error sending manual SMS:', error);
       alert('Failed to send SMS. Please check your settings.');
     } finally {
       setLoading(false);
@@ -187,10 +235,8 @@ function App() {
     return randomLetters + randomNumbers;
   };
 
-  const generateOtp = (): string => {
-    // Generate 4 or 6 digit OTP randomly
-    const isOtpLength = Math.random() < 0.5 ? 4 : 6;
-    if (isOtpLength === 4) {
+  const generateOtp = (length: 4 | 6): string => {
+    if (length === 4) {
       return Math.floor(1000 + Math.random() * 9000).toString();
     } else {
       return Math.floor(100000 + Math.random() * 900000).toString();
@@ -205,9 +251,31 @@ function App() {
     try {
       const orderId = generateOrderId();
       const awb = generateAwb();
-      const otp = generateOtp();
+      const otp = generateOtp(deliveryOtpLength);
 
       const deliveryMessage = `Dvaarikart:Your order ${orderId} (AWB:${awb}) is out for delivery. Open Box Delivery OTP:${otp} valid till ${deliveryTime} today. Please share OTP after checking the product condition. Delivery Partner: Dvaarikart - GRAHNETRA AI LABS`;
+      const requestBody = {
+        number: deliveryNumber.trim(),
+        sender_id: deliverySenderId || 'GNETRA',
+        message: deliveryMessage,
+        order_id: orderId,
+        awb: awb,
+        otp: otp,
+        valid_till: deliveryTime
+      };
+      const endpoint = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`;
+
+      console.log('[SMS App] Sending delivery OTP SMS request', {
+        endpoint,
+        number: requestBody.number,
+        senderId: requestBody.sender_id,
+        orderId,
+        awb,
+        otp,
+        validTill: deliveryTime,
+        messageLength: deliveryMessage.length,
+        hasAnonKey: Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY)
+      });
 
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
         method: 'POST',
@@ -215,27 +283,25 @@ function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
         },
-        body: JSON.stringify({
-          number: deliveryNumber.trim(),
-          sender_id: deliverySenderId || 'GNETRA',
-          message: deliveryMessage,
-          order_id: orderId,
-          awb: awb,
-          otp: otp,
-          valid_till: deliveryTime
-        })
+        body: JSON.stringify(requestBody)
       });
 
-      const result = await response.json();
+      const { parsed: result, raw } = await safeJson(response);
+      console.log('[SMS App] Delivery OTP SMS response', {
+        httpStatus: response.status,
+        ok: response.ok,
+        result,
+        raw
+      });
 
-      if (result.success) {
+      if (result?.success) {
         alert(`Delivery SMS sent successfully!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
         fetchLogs();
       } else {
-        alert(result.error || 'Failed to send delivery SMS');
+        alert(result?.error || raw || 'Failed to send delivery SMS');
       }
     } catch (error) {
-      console.error('Error sending delivery SMS:', error);
+      console.error('[SMS App] Error sending delivery SMS:', error);
       alert('Failed to send delivery SMS. Please check your settings.');
     } finally {
       setDeliveryLoading(false);
@@ -483,12 +549,32 @@ function App() {
                   </select>
                 </div>
 
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">OTP Digits</label>
+                  <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+                    {[4, 6].map((length) => (
+                      <button
+                        key={length}
+                        type="button"
+                        onClick={() => setDeliveryOtpLength(length as 4 | 6)}
+                        className={`rounded-md px-4 py-3 text-sm font-semibold transition-all ${
+                          deliveryOtpLength === length
+                            ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {length} Digit
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
                   <p className="text-sm text-slate-700 font-medium mb-3">Auto-generated Details:</p>
                   <div className="space-y-2 text-sm text-slate-600">
                     <p>Order ID: <span className="font-mono text-slate-800">Generated on send</span></p>
                     <p>AWB: <span className="font-mono text-slate-800">Generated on send</span></p>
-                    <p>OTP: <span className="font-mono text-slate-800">Generated on send</span></p>
+                    <p>OTP: <span className="font-mono text-slate-800">{deliveryOtpLength} digit, generated on send</span></p>
                   </div>
                 </div>
 
