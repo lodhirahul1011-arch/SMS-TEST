@@ -6,7 +6,12 @@
       - `id` (uuid, primary key)
       - `number` (text, recipient phone number)
       - `message` (text, SMS content)
-      - `sender_id` (text, sender identifier)
+    - `sender_id` (text, sender identifier)
+      - `button_clicked` (text, fixed delivery button used)
+      - `order_id` (text, fixed delivery order ID)
+      - `awb` (text, fixed delivery AWB number)
+      - `otp` (text, fixed delivery OTP)
+      - `valid_till` (text, fixed delivery expiry time)
       - `status` (text, delivery status)
       - `provider_response` (jsonb, API response from SMS provider)
       - `message_id` (text, provider message ID)
@@ -31,6 +36,11 @@ CREATE TABLE IF NOT EXISTS sms_logs (
   number text NOT NULL,
   message text,
   sender_id text,
+  button_clicked text,
+  order_id text,
+  awb text,
+  otp text,
+  valid_till text,
   status text DEFAULT 'pending',
   provider_response jsonb,
   message_id text,

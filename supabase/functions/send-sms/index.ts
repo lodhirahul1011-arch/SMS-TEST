@@ -5,6 +5,7 @@ interface SendSmsRequest {
   number: string;
   sender_id?: string;
   message?: string;
+  button_clicked?: string;
   order_id?: string;
   awb?: string;
   otp?: string;
@@ -30,6 +31,20 @@ interface ProviderResponse {
   };
 }
 
+interface LogInsertPayload {
+  number: string;
+  message: string | null;
+  sender_id: string;
+  status: string;
+  button_clicked?: string | null;
+  order_id?: string | null;
+  awb?: string | null;
+  otp?: string | null;
+  valid_till?: string | null;
+  provider_response: ProviderResponse | { error: string };
+  message_id?: string | null;
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
@@ -44,6 +59,16 @@ const maskValue = (value?: string | null) => {
 
 const buildSmsUrlForLog = (url: string, apiKey: string) => {
   return url.replace(apiKey, 'HIDDEN_API_KEY');
+};
+
+const stripDeliveryFields = (payload: LogInsertPayload) => {
+  const basePayload = { ...payload };
+  delete basePayload.button_clicked;
+  delete basePayload.order_id;
+  delete basePayload.awb;
+  delete basePayload.otp;
+  delete basePayload.valid_till;
+  return basePayload;
 };
 
 Deno.serve(async (req: Request) => {
@@ -106,6 +131,7 @@ Deno.serve(async (req: Request) => {
       finalSenderId: senderId,
       rawNumber: payload.number || 'missing',
       messageLength: payload.message?.length || 0,
+      buttonClicked: payload.button_clicked,
       orderId: payload.order_id,
       awb: payload.awb,
       otp: payload.otp,
@@ -163,17 +189,35 @@ Deno.serve(async (req: Request) => {
       });
 
       // Log the attempt without actually sending
-      const { data: logEntry, error: logError } = await supabase
+      const missingConfigLogPayload: LogInsertPayload = {
+        number: number,
+        message: payload.message || null,
+        sender_id: senderId,
+        status: 'failed',
+        button_clicked: payload.button_clicked || null,
+        order_id: payload.order_id || null,
+        awb: payload.awb || null,
+        otp: payload.otp || null,
+        valid_till: payload.valid_till || null,
+        provider_response: { error: 'SMS API not configured. Please save API key and base URL in settings, or set Supabase SMS_* secrets.' }
+      };
+
+      let { data: logEntry, error: logError } = await supabase
         .from('sms_logs')
-        .insert({
-          number: number,
-          message: payload.message || null,
-          sender_id: senderId,
-          status: 'failed',
-          provider_response: { error: 'SMS API not configured. Please save API key and base URL in settings, or set Supabase SMS_* secrets.' }
-        })
+        .insert(missingConfigLogPayload)
         .select()
         .single();
+
+      if (logError && String(logError.message || '').includes('button_clicked')) {
+        console.warn(`[send-sms:${requestId}] Delivery log columns missing, retrying base log insert`, logError);
+        const retry = await supabase
+          .from('sms_logs')
+          .insert(stripDeliveryFields(missingConfigLogPayload))
+          .select()
+          .single();
+        logEntry = retry.data;
+        logError = retry.error;
+      }
 
       if (logError) {
         console.error(`[send-sms:${requestId}] Failed to save missing-config log`, logError);
@@ -256,18 +300,36 @@ Deno.serve(async (req: Request) => {
     });
 
     // Log to database
-    const { data: logEntry, error: logError } = await supabase
+    const smsLogPayload: LogInsertPayload = {
+      number: number,
+      message: payload.message || null,
+      sender_id: senderId,
+      status: isSuccess ? 'success' : 'failed',
+      button_clicked: payload.button_clicked || null,
+      order_id: payload.order_id || null,
+      awb: payload.awb || null,
+      otp: payload.otp || null,
+      valid_till: payload.valid_till || null,
+      provider_response: providerResponse,
+      message_id: providerResponse?.data?.messageid || null
+    };
+
+    let { data: logEntry, error: logError } = await supabase
       .from('sms_logs')
-      .insert({
-        number: number,
-        message: payload.message || null,
-        sender_id: senderId,
-        status: isSuccess ? 'success' : 'failed',
-        provider_response: providerResponse,
-        message_id: providerResponse?.data?.messageid || null
-      })
+      .insert(smsLogPayload)
       .select()
       .single();
+
+    if (logError && String(logError.message || '').includes('button_clicked')) {
+      console.warn(`[send-sms:${requestId}] Delivery log columns missing, retrying base log insert`, logError);
+      const retry = await supabase
+        .from('sms_logs')
+        .insert(stripDeliveryFields(smsLogPayload))
+        .select()
+        .single();
+      logEntry = retry.data;
+      logError = retry.error;
+    }
 
     if (logError) {
       console.error(`[send-sms:${requestId}] Failed to save sms_logs row`, logError);

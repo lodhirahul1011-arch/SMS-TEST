@@ -1,6 +1,21 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from './lib/supabase';
-import { Send, Phone, User, MessageSquare, History, CheckCircle, XCircle, Clock, Settings, Save, Package } from 'lucide-react';
+import {
+  CheckCircle,
+  Clipboard,
+  Clock,
+  History,
+  Loader2,
+  MessageSquare,
+  Package,
+  Phone,
+  QrCode,
+  Save,
+  Send,
+  Settings,
+  User,
+  XCircle
+} from 'lucide-react';
 
 interface SmsLog {
   id: string;
@@ -16,9 +31,72 @@ interface SmsLog {
   } | null;
   message_id: string | null;
   created_at: string;
+  button_clicked?: string | null;
+  order_id?: string | null;
+  awb?: string | null;
+  otp?: string | null;
+  valid_till?: string | null;
+}
+
+interface FixedDelivery {
+  id: string;
+  label: string;
+  orderId: string;
+  awb: string;
+  otp: string;
+  validTill: string;
+  color: string;
 }
 
 const savedPhoneNumberKey = 'sms-lab-phone-number';
+
+const fixedDeliveries: FixedDelivery[] = [
+  {
+    id: 'delivery-1',
+    label: 'Delivery 1',
+    orderId: 'OD21803765141',
+    awb: 'FMPP13450532861',
+    otp: '626717',
+    validTill: '5pm',
+    color: 'from-blue-600 to-indigo-600'
+  },
+  {
+    id: 'delivery-2',
+    label: 'Delivery 2',
+    orderId: 'OD21803765142',
+    awb: 'FMPP13450532862',
+    otp: '734219',
+    validTill: '5pm',
+    color: 'from-teal-600 to-emerald-600'
+  },
+  {
+    id: 'delivery-3',
+    label: 'Delivery 3',
+    orderId: 'OD21803765143',
+    awb: 'FMPP13450532863',
+    otp: '582940',
+    validTill: '5pm',
+    color: 'from-orange-500 to-amber-500'
+  },
+  {
+    id: 'delivery-4',
+    label: 'Delivery 4',
+    orderId: 'OD21803765144',
+    awb: 'FMPP13450532864',
+    otp: '918356',
+    validTill: '5pm',
+    color: 'from-green-600 to-lime-600'
+  },
+  {
+    id: 'delivery-5',
+    label: 'Delivery 5',
+    orderId: 'OD21803765145',
+    awb: 'FMPP13450532865',
+    otp: '407682',
+    validTill: '5pm',
+    color: 'from-rose-600 to-pink-600'
+  }
+];
 
 const maskValue = (value?: string) => {
   if (!value) return 'missing';
@@ -46,16 +124,23 @@ function App() {
   const [apiKey, setApiKey] = useState('');
   const [templateId, setTemplateId] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
-  const [activeTab, setActiveTab] = useState<'send' | 'delivery'>('delivery');
+  const [activeTab, setActiveTab] = useState<'send' | 'delivery' | 'prefixDelivery'>('delivery');
   const [deliveryNumber, setDeliveryNumber] = useState(() => localStorage.getItem(savedPhoneNumberKey) || '');
   const [deliveryLoading, setDeliveryLoading] = useState(false);
-  const [deliverySenderId, setDeliverySenderId] = useState('GNETRA');
   const [deliveryTime, setDeliveryTime] = useState('1pm');
   const [deliveryOtpLength, setDeliveryOtpLength] = useState<4 | 6>(4);
+  const [selectedFixedDelivery, setSelectedFixedDelivery] = useState<FixedDelivery | null>(null);
+  const [fixedDeliveryLoadingId, setFixedDeliveryLoadingId] = useState<string | null>(null);
+  const [confirmOrderId, setConfirmOrderId] = useState('');
+
+  const qrText = selectedFixedDelivery ? `${selectedFixedDelivery.orderId}|${selectedFixedDelivery.awb}` : '';
+  const qrUrl = useMemo(
+    () => (qrText ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qrText)}` : ''),
+    [qrText]
+  );
 
   useEffect(() => {
     fetchLogs();
-    // Load credentials from environment variables
     const envApiKey = import.meta.env.VITE_SMS_API_KEY;
     const envSenderId = import.meta.env.VITE_SMS_SENDER_ID;
     const envTemplateId = import.meta.env.VITE_SMS_TEMPLATE_ID;
@@ -180,12 +265,6 @@ function App() {
       });
 
       const { parsed: result, raw } = await safeJson(response);
-      console.log('[SMS App] Manual SMS response', {
-        httpStatus: response.status,
-        ok: response.ok,
-        result,
-        raw
-      });
 
       if (result?.success) {
         setMessage('');
@@ -223,12 +302,10 @@ function App() {
   };
 
   const generateOrderId = (): string => {
-    // Generate 13-digit order ID (matching example: 6760322204547)
     return Math.floor(Math.random() * 10000000000000).toString().padStart(13, '0');
   };
 
   const generateAwb = (): string => {
-    // Generate AWB alphanumeric (4 letters + 11 digits, matching: FMPP3917065945)
     const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     const randomLetters = Array.from({ length: 4 }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
     const randomNumbers = Math.floor(Math.random() * 100000000000).toString().padStart(11, '0');
@@ -256,7 +333,7 @@ function App() {
       const deliveryMessage = `Dvaarikart:Your order ${orderId} (AWB:${awb}) is out for delivery. Open Box Delivery OTP:${otp} valid till ${deliveryTime} today. Please share OTP after checking the product condition. Delivery Partner: Dvaarikart - GRAHNETRA AI LABS`;
       const requestBody = {
         number: deliveryNumber.trim(),
-        sender_id: deliverySenderId || 'GNETRA',
+        sender_id: 'GNETRA',
         message: deliveryMessage,
         order_id: orderId,
         awb: awb,
@@ -287,12 +364,6 @@ function App() {
       });
 
       const { parsed: result, raw } = await safeJson(response);
-      console.log('[SMS App] Delivery OTP SMS response', {
-        httpStatus: response.status,
-        ok: response.ok,
-        result,
-        raw
-      });
 
       if (result?.success) {
         alert(`Delivery SMS sent successfully!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
@@ -308,10 +379,71 @@ function App() {
     }
   };
 
+  const sendFixedDeliveryNotification = async (delivery: FixedDelivery) => {
+    if (!deliveryNumber.trim()) return;
+
+    setSelectedFixedDelivery(delivery);
+    setConfirmOrderId('');
+    setFixedDeliveryLoadingId(delivery.id);
+
+    try {
+      const deliveryMessage = `Dvaarikart:Your order ${delivery.orderId} (AWB:${delivery.awb}) is out for delivery. Open Box Delivery OTP:${delivery.otp} valid till ${delivery.validTill} today. Please share OTP after checking the product condition. Delivery Partner: Dvaarikart - GRAHNETRA AI LABS`;
+      const requestBody = {
+        number: deliveryNumber.trim(),
+        sender_id: 'GNETRA',
+        message: deliveryMessage,
+        button_clicked: delivery.label,
+        order_id: delivery.orderId,
+        awb: delivery.awb,
+        otp: delivery.otp,
+        valid_till: delivery.validTill
+      };
+
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      const { parsed: result, raw } = await safeJson(response);
+
+      if (result?.success) {
+        alert(`Prefix Delivery SMS sent!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
+        fetchLogs();
+      } else {
+        alert(result?.error || raw || 'Failed to send prefix delivery SMS');
+      }
+    } catch (error) {
+      console.error('[SMS App] Error sending prefix delivery SMS:', error);
+      alert('Failed to send prefix delivery SMS. Please check your settings.');
+    } finally {
+      setFixedDeliveryLoadingId(null);
+    }
+  };
+
+  const copySelectedOrderId = async () => {
+    if (!selectedFixedDelivery) return;
+    await navigator.clipboard.writeText(selectedFixedDelivery.orderId);
+  };
+
+  const confirmSelectedDelivery = () => {
+    if (!selectedFixedDelivery) {
+      alert('Select a delivery first.');
+      return;
+    }
+    if (confirmOrderId.trim() !== selectedFixedDelivery.orderId) {
+      alert('Order ID does not match selected delivery.');
+      return;
+    }
+    alert(`Confirmed: ${selectedFixedDelivery.orderId}`);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-slate-100">
       <div className="max-w-6xl mx-auto px-4 py-8">
-        {/* Header */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-2xl shadow-lg mb-4">
             <MessageSquare className="w-8 h-8 text-white" />
@@ -320,11 +452,21 @@ function App() {
           <p className="text-slate-600">Send SMS messages instantly with real-time tracking</p>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex gap-2 mb-8 max-w-2xl">
+        <div className="grid sm:grid-cols-3 gap-2 mb-8 max-w-4xl">
+          <button
+            onClick={() => setActiveTab('send')}
+            className={`py-3 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${
+              activeTab === 'send'
+                ? 'bg-blue-500 text-white shadow-lg'
+                : 'bg-white text-slate-700 border border-slate-200 hover:border-slate-300'
+            }`}
+          >
+            <MessageSquare className="w-4 h-4" />
+            Send SMS
+          </button>
           <button
             onClick={() => setActiveTab('delivery')}
-            className={`flex-1 py-3 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${
+            className={`py-3 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${
               activeTab === 'delivery'
                 ? 'bg-blue-500 text-white shadow-lg'
                 : 'bg-white text-slate-700 border border-slate-200 hover:border-slate-300'
@@ -333,14 +475,28 @@ function App() {
             <Package className="w-4 h-4" />
             Delivery Order
           </button>
+          <button
+            onClick={() => setActiveTab('prefixDelivery')}
+            className={`py-3 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${
+              activeTab === 'prefixDelivery'
+                ? 'bg-blue-500 text-white shadow-lg'
+                : 'bg-white text-slate-700 border border-slate-200 hover:border-slate-300'
+            }`}
+          >
+            <QrCode className="w-4 h-4" />
+            Prefix Delivery SMS
+          </button>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-8">
-          {/* Form Container */}
           <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-semibold text-slate-800">
-                {activeTab === 'send' ? 'Send SMS' : 'Delivery Notification'}
+                {activeTab === 'send'
+                  ? 'Send SMS'
+                  : activeTab === 'prefixDelivery'
+                    ? 'Prefix Delivery SMS'
+                    : 'Delivery Notification'}
               </h2>
               {activeTab === 'send' && (
                 <button
@@ -481,6 +637,77 @@ function App() {
                   )}
                 </button>
               </form>
+            ) : activeTab === 'prefixDelivery' ? (
+              <div className="space-y-5">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    <div className="flex items-center gap-2">
+                      <Phone className="w-4 h-4" />
+                      Recipient Mobile Number
+                    </div>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={deliveryNumber}
+                      onChange={(e) => setDeliveryNumber(e.target.value)}
+                      className="min-w-0 flex-1 px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                      placeholder="10-digit number (same user receives SMS)"
+                      inputMode="numeric"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => savePhoneNumber(deliveryNumber)}
+                      disabled={!deliveryNumber.trim() || isDeliveryNumberSaved}
+                      className="shrink-0 px-4 py-3 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 text-white rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
+                    >
+                      <Save className="w-4 h-4" />
+                      {isDeliveryNumberSaved ? 'Saved' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Sender ID</label>
+                  <select
+                    value="GNETRA"
+                    disabled
+                    className="w-full px-4 py-3 border border-slate-300 rounded-lg bg-slate-50 text-slate-700"
+                  >
+                    <option value="GNETRA">GNETRA (verified)</option>
+                  </select>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-3">
+                  {fixedDeliveries.map((delivery) => (
+                    <button
+                      key={delivery.id}
+                      type="button"
+                      onClick={() => sendFixedDeliveryNotification(delivery)}
+                      disabled={fixedDeliveryLoadingId !== null || !deliveryNumber.trim()}
+                      className={`min-h-24 rounded-xl bg-gradient-to-r ${delivery.color} disabled:from-slate-300 disabled:to-slate-400 text-white font-semibold px-4 py-4 transition-all shadow-lg hover:shadow-xl disabled:shadow-none flex flex-col items-center justify-center gap-2`}
+                    >
+                      {fixedDeliveryLoadingId === delivery.id ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Package className="w-5 h-5" />
+                      )}
+                      {delivery.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                  <p className="text-sm text-slate-700 font-medium mb-3">Fixed Delivery Data:</p>
+                  <div className="space-y-2 text-sm text-slate-600">
+                    <p>Order ID: <span className="font-mono text-slate-800">{selectedFixedDelivery?.orderId || 'Select a delivery'}</span></p>
+                    <p>AWB: <span className="font-mono text-slate-800">{selectedFixedDelivery?.awb || 'Select a delivery'}</span></p>
+                    <p>OTP: <span className="font-mono text-slate-800">{selectedFixedDelivery?.otp || 'Select a delivery'}</span></p>
+                    <p>Valid Till: <span className="font-mono text-slate-800">{selectedFixedDelivery?.validTill || 'Select a delivery'}</span></p>
+                  </div>
+                </div>
+              </div>
             ) : (
               <form onSubmit={sendDeliveryNotification} className="space-y-5">
                 <div>
@@ -516,12 +743,11 @@ function App() {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">Sender ID</label>
                   <select
-                    value={deliverySenderId}
-                    onChange={(e) => setDeliverySenderId(e.target.value)}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
+                    value="GNETRA"
+                    disabled
+                    className="w-full px-4 py-3 border border-slate-300 rounded-lg bg-slate-50 text-slate-700"
                   >
                     <option value="GNETRA">GNETRA (verified)</option>
-                    <option value="DVRKRT">DVRKRT</option>
                   </select>
                 </div>
 
@@ -599,52 +825,119 @@ function App() {
             )}
           </div>
 
-          {/* SMS History */}
-          <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
-            <div className="flex items-center gap-2 mb-6">
-              <History className="w-5 h-5 text-slate-600" />
-              <h2 className="text-xl font-semibold text-slate-800">Recent Messages</h2>
-            </div>
-
-            <div className="space-y-3 max-h-[500px] overflow-y-auto">
-              {logs.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                  <p>No messages sent yet</p>
+          <div className="space-y-8">
+            {activeTab === 'prefixDelivery' && (
+              <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
+                <div className="flex items-center gap-2 mb-6">
+                  <QrCode className="w-5 h-5 text-slate-600" />
+                  <h2 className="text-xl font-semibold text-slate-800">QR Code</h2>
                 </div>
-              ) : (
-                logs.map((log) => (
-                  <div
-                    key={log.id}
-                    className="bg-slate-50 rounded-xl p-4 border border-slate-200 hover:border-slate-300 transition-colors"
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        {getStatusIcon(log.status)}
-                        <span className="font-medium text-slate-800">{log.number}</span>
-                      </div>
-                      <span className="text-xs text-slate-500">{formatDate(log.created_at)}</span>
+
+                {selectedFixedDelivery ? (
+                  <div className="space-y-5">
+                    <div className="flex justify-center rounded-lg border border-blue-200 bg-blue-50 p-4">
+                      <img className="h-56 w-56" src={qrUrl} alt={`${selectedFixedDelivery.orderId} QR code`} />
                     </div>
-                    {log.message && (
-                      <p className="text-sm text-slate-600 mb-2">{log.message}</p>
-                    )}
-                    <div className="flex items-center gap-3 text-xs text-slate-500">
-                      <span>Sender: {log.sender_id}</span>
-                      {log.message_id && <span>ID: {log.message_id}</span>}
+                    <textarea
+                      readOnly
+                      value={`${selectedFixedDelivery.orderId} or ${selectedFixedDelivery.awb}`}
+                      className="w-full px-4 py-3 border border-slate-300 rounded-lg resize-none font-mono text-sm"
+                      rows={2}
+                    />
+                    <input
+                      value={confirmOrderId}
+                      onChange={(e) => setConfirmOrderId(e.target.value)}
+                      className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
+                      placeholder="Enter Order ID manually"
+                    />
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={confirmSelectedDelivery}
+                        className="bg-blue-500 hover:bg-blue-600 text-white font-medium py-3 px-4 rounded-lg transition-colors"
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmOrderId(selectedFixedDelivery.orderId)}
+                        className="border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-3 px-4 rounded-lg transition-colors"
+                      >
+                        Scan QR
+                      </button>
+                      <button
+                        type="button"
+                        onClick={copySelectedOrderId}
+                        className="border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center"
+                        title="Copy Order ID"
+                      >
+                        <Clipboard className="w-4 h-4" />
+                      </button>
                     </div>
-                    {log.provider_response && (
-                      <div className="mt-2 text-xs text-slate-500 bg-slate-100 rounded-lg p-2">
-                        {log.provider_response.description || log.provider_response.status}
-                      </div>
-                    )}
                   </div>
-                ))
-              )}
+                ) : (
+                  <div className="text-center py-12 text-slate-500 border border-dashed border-slate-300 rounded-xl">
+                    <QrCode className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                    <p>Select a fixed delivery button to show QR</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
+              <div className="flex items-center gap-2 mb-6">
+                <History className="w-5 h-5 text-slate-600" />
+                <h2 className="text-xl font-semibold text-slate-800">Recent Messages</h2>
+              </div>
+
+              <div className="space-y-3 max-h-[500px] overflow-y-auto">
+                {logs.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500">
+                    <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                    <p>No messages sent yet</p>
+                  </div>
+                ) : (
+                  logs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="bg-slate-50 rounded-xl p-4 border border-slate-200 hover:border-slate-300 transition-colors"
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          {getStatusIcon(log.status)}
+                          <span className="font-medium text-slate-800">{log.number}</span>
+                        </div>
+                        <span className="text-xs text-slate-500">{formatDate(log.created_at)}</span>
+                      </div>
+                      {log.message && (
+                        <p className="text-sm text-slate-600 mb-2">{log.message}</p>
+                      )}
+                      {(log.order_id || log.awb || log.otp || log.valid_till || log.button_clicked) && (
+                        <div className="grid sm:grid-cols-2 gap-2 text-xs text-slate-600 bg-white rounded-lg p-3 mb-2">
+                          <span>Button: {log.button_clicked || '-'}</span>
+                          <span>Order ID: {log.order_id || '-'}</span>
+                          <span>AWB: {log.awb || '-'}</span>
+                          <span>OTP: {log.otp || '-'}</span>
+                          <span>Valid Till: {log.valid_till || '-'}</span>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-3 text-xs text-slate-500">
+                        <span>Sender: {log.sender_id}</span>
+                        {log.message_id && <span>ID: {log.message_id}</span>}
+                      </div>
+                      {log.provider_response && (
+                        <div className="mt-2 text-xs text-slate-500 bg-slate-100 rounded-lg p-2">
+                          {log.provider_response.description || log.provider_response.status}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Footer */}
         <div className="text-center mt-10 text-slate-500 text-sm">
           <p>SMS Notification Lab - Powered by Supabase Edge Functions</p>
         </div>
