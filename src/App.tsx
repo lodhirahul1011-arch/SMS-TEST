@@ -48,52 +48,54 @@ interface FixedDelivery {
   color: string;
 }
 
+type DeliveryIdentifierType = 'orderId' | 'awb';
+
 const savedPhoneNumberKey = 'sms-lab-phone-number';
 
 const fixedDeliveries: FixedDelivery[] = [
   {
     id: 'delivery-1',
     label: 'Delivery 1',
-    orderId: 'OD21803765141',
-    awb: 'FMPP13450532861',
-    otp: '626717',
-    validTill: '5pm',
+    orderId: '5370227072497',
+    awb: 'KGNL04406223600',
+    otp: '2198',
+    validTill: '5 pm',
     color: 'from-blue-600 to-indigo-600'
   },
   {
     id: 'delivery-2',
     label: 'Delivery 2',
-    orderId: 'OD21803765142',
-    awb: 'FMPP13450532862',
+    orderId: 'OD78437203839',
+    awb: 'JIZJ63848104950',
     otp: '734219',
-    validTill: '5pm',
+    validTill: '7pm',
     color: 'from-teal-600 to-emerald-600'
   },
   {
     id: 'delivery-3',
     label: 'Delivery 3',
-    orderId: 'OD21803765143',
-    awb: 'FMPP13450532863',
-    otp: '582940',
-    validTill: '5pm',
+    orderId: '8080254609466',
+    awb: 'LTUF61749660227',
+    otp: '753928',
+    validTill: '1pm',
     color: 'from-orange-500 to-amber-500'
   },
   {
     id: 'delivery-4',
     label: 'Delivery 4',
-    orderId: 'OD21803765144',
-    awb: 'FMPP13450532864',
-    otp: '918356',
-    validTill: '5pm',
+    orderId: '7550450755625',
+    awb: 'MRKN70852666002',
+    otp: '1656',
+    validTill: '2pm',
     color: 'from-green-600 to-lime-600'
   },
   {
     id: 'delivery-5',
     label: 'Delivery 5',
-    orderId: 'OD21803765145',
-    awb: 'FMPP13450532865',
-    otp: '407682',
-    validTill: '5pm',
+    orderId: '0536663617534',
+    awb: 'MJWY68010552189',
+    otp: '380648',
+    validTill: '11 pm',
     color: 'from-rose-600 to-pink-600'
   }
 ];
@@ -132,8 +134,13 @@ function App() {
   const [selectedFixedDelivery, setSelectedFixedDelivery] = useState<FixedDelivery | null>(null);
   const [fixedDeliveryLoadingId, setFixedDeliveryLoadingId] = useState<string | null>(null);
   const [confirmOrderId, setConfirmOrderId] = useState('');
+  const [selectedIdentifierType, setSelectedIdentifierType] = useState<DeliveryIdentifierType>('orderId');
 
-  const qrText = selectedFixedDelivery ? `${selectedFixedDelivery.orderId}|${selectedFixedDelivery.awb}` : '';
+  const selectedIdentifierLabel = selectedIdentifierType === 'orderId' ? 'Order ID' : 'AWB';
+  const selectedIdentifierValue = selectedFixedDelivery
+    ? selectedFixedDelivery[selectedIdentifierType]
+    : '';
+  const qrText = selectedIdentifierValue;
   const qrUrl = useMemo(
     () => (qrText ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qrText)}` : ''),
     [qrText]
@@ -383,6 +390,7 @@ function App() {
     if (!deliveryNumber.trim()) return;
 
     setSelectedFixedDelivery(delivery);
+    setSelectedIdentifierType('orderId');
     setConfirmOrderId('');
     setFixedDeliveryLoadingId(delivery.id);
 
@@ -426,7 +434,7 @@ function App() {
 
   const copySelectedOrderId = async () => {
     if (!selectedFixedDelivery) return;
-    await navigator.clipboard.writeText(selectedFixedDelivery.orderId);
+    await navigator.clipboard.writeText(selectedIdentifierValue);
   };
 
   const confirmSelectedDelivery = () => {
@@ -434,11 +442,11 @@ function App() {
       alert('Select a delivery first.');
       return;
     }
-    if (confirmOrderId.trim() !== selectedFixedDelivery.orderId) {
-      alert('Order ID does not match selected delivery.');
+    if (confirmOrderId.trim() !== selectedIdentifierValue) {
+      alert(`${selectedIdentifierLabel} does not match selected delivery.`);
       return;
     }
-    alert(`Confirmed: ${selectedFixedDelivery.orderId}`);
+    alert(`Confirmed: ${selectedIdentifierLabel} ${selectedIdentifierValue}`);
   };
 
   return (
@@ -836,19 +844,49 @@ function App() {
                 {selectedFixedDelivery ? (
                   <div className="space-y-5">
                     <div className="flex justify-center rounded-lg border border-blue-200 bg-blue-50 p-4">
-                      <img className="h-56 w-56" src={qrUrl} alt={`${selectedFixedDelivery.orderId} QR code`} />
+                      <img className="h-56 w-56" src={qrUrl} alt={`${selectedIdentifierValue} QR code`} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedIdentifierType('orderId');
+                          setConfirmOrderId('');
+                        }}
+                        className={`rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+                          selectedIdentifierType === 'orderId'
+                            ? 'border-blue-500 bg-blue-50 text-blue-700'
+                            : 'border-slate-300 text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        Order ID
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedIdentifierType('awb');
+                          setConfirmOrderId('');
+                        }}
+                        className={`rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+                          selectedIdentifierType === 'awb'
+                            ? 'border-blue-500 bg-blue-50 text-blue-700'
+                            : 'border-slate-300 text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        AWB
+                      </button>
                     </div>
                     <textarea
                       readOnly
-                      value={`${selectedFixedDelivery.orderId} or ${selectedFixedDelivery.awb}`}
+                      value={selectedIdentifierValue}
                       className="w-full px-4 py-3 border border-slate-300 rounded-lg resize-none font-mono text-sm"
-                      rows={2}
+                      rows={1}
                     />
                     <input
                       value={confirmOrderId}
                       onChange={(e) => setConfirmOrderId(e.target.value)}
                       className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
-                      placeholder="Enter Order ID manually"
+                      placeholder={`Enter ${selectedIdentifierLabel} manually`}
                     />
                     <div className="grid grid-cols-3 gap-2">
                       <button
@@ -860,7 +898,7 @@ function App() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setConfirmOrderId(selectedFixedDelivery.orderId)}
+                        onClick={() => setConfirmOrderId(selectedIdentifierValue)}
                         className="border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-3 px-4 rounded-lg transition-colors"
                       >
                         Scan QR
@@ -869,7 +907,7 @@ function App() {
                         type="button"
                         onClick={copySelectedOrderId}
                         className="border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center"
-                        title="Copy Order ID"
+                        title={`Copy ${selectedIdentifierLabel}`}
                       >
                         <Clipboard className="w-4 h-4" />
                       </button>
