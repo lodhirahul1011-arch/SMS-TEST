@@ -48,7 +48,16 @@ interface LogInsertPayload {
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Credentials": "true",
+  "Access-Control-Max-Age": "86400"
+};
+
+const createJsonResponse = (body: unknown, status = 200) => {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
 };
 
 const maskValue = (value?: string | null) => {
@@ -76,9 +85,9 @@ Deno.serve(async (req: Request) => {
 
   if (req.method === "OPTIONS") {
     console.log(`[send-sms:${requestId}] CORS preflight handled`);
-    return new Response(null, {
+    return new Response('ok', {
       status: 200,
-      headers: corsHeaders,
+      headers: { ...corsHeaders, 'Content-Type': 'text/plain' }
     });
   }
 
