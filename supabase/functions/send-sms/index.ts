@@ -49,7 +49,6 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Credentials": "true",
   "Access-Control-Max-Age": "86400"
 };
 
@@ -143,7 +142,19 @@ Deno.serve(async (req: Request) => {
       savedSettings?.sender_id ||
       'GNETRA';
 
-    const payload: SendSmsRequest = await req.json();
+    let payload: SendSmsRequest;
+    try {
+      const rawBody = await req.text();
+      payload = rawBody ? JSON.parse(rawBody) : {};
+    } catch (parseError) {
+      console.error(`[send-sms:${requestId}] Invalid JSON body`, parseError);
+      return createJsonResponse({
+        success: false,
+        error: 'Invalid JSON request body',
+        request_id: requestId
+      }, 400);
+    }
+
     const senderId = (payload.sender_id || defaultSenderId || '').trim();
 
     console.log(`[send-sms:${requestId}] SMS config and payload`, {

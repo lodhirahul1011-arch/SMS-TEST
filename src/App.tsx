@@ -207,42 +207,47 @@ const sendViaSupabaseFunction = async (
   requestBody: SendSmsPayload,
   logContext: Record<string, unknown>
 ) => {
-  if (!supabaseUrl || !supabasePublicKey || !supabase) {
+  if (!supabaseUrl || !supabasePublicKey) {
     throw new Error(getSupabaseConfigurationError());
   }
 
+  const endpoint = `${supabaseUrl}/functions/v1/send-sms`;
+
   console.log('[SMS App] Sending SMS request via Supabase Edge Function', {
-    endpoint: `${supabaseUrl}/functions/v1/send-sms`,
+    endpoint,
     hasSupabasePublicKey: Boolean(supabasePublicKey),
+    // This app deliberately uses a simple text/plain POST instead of
+    // supabase.functions.invoke(). In some hosted browsers Supabase's
+    // invoke headers trigger an OPTIONS preflight. If the function was
+    // deployed without the local config, that preflight is rejected by the
+    // gateway before our CORS handler runs. A simple request reaches the
+    // Edge Function directly when verify_jwt=false.
+    requestMode: 'simple-cors-safe-post',
     ...logContext
   });
 
-  const { data: result, error } = await supabase.functions.invoke('send-sms', {
-    body: requestBody
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      // text/plain is a CORS-safelisted content type, so the browser does
+      // not send a preflight OPTIONS request. The Edge Function still parses
+      // this JSON string with req.text()/JSON.parse.
+      'Content-Type': 'text/plain;charset=UTF-8'
+    },
+    body: JSON.stringify(requestBody)
   });
 
-  if (error) {
-    const responseContext =
-      typeof error === 'object' &&
-      error !== null &&
-      'context' in error &&
-      error.context instanceof Response
-        ? error.context
-        : null;
+  const { parsed, raw } = await safeJson(response);
 
-    if (responseContext) {
-      const { parsed, raw } = await safeJson(responseContext);
-      throw new Error(parsed?.error || parsed?.details || raw || error.message);
-    }
-
-    throw new Error(error.message);
+  if (!response.ok) {
+    throw new Error(parsed?.error || parsed?.details || raw || `Edge Function returned HTTP ${response.status}`);
   }
 
-  if (!result?.success) {
-    throw new Error(result?.error || 'Failed to send SMS');
+  if (!parsed?.success) {
+    throw new Error(parsed?.error || parsed?.details || raw || 'Failed to send SMS');
   }
 
-  return result;
+  return parsed;
 };
 
 function App() {
