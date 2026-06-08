@@ -168,7 +168,7 @@ const sendViaSmsProvider = async (url: string) => {
 };
 
 const trySendViaProvider = async (body: { number: string; message: string; sender_id: string }) => {
-  const providerUrl = buildSmsProviderUrl(body.number, body.message || '', body.sender_id || 'GNETRA');
+  const providerUrl = buildSmsProviderUrl(body.number, body.message || '', body.sender_id || 'DVRKRT');
   if (!providerUrl) {
     throw new Error('SMS provider configuration is incomplete. Please set VITE_SMS_API_KEY, VITE_SMS_TEMPLATE_ID, and VITE_SMS_BASE_URL.');
   }
@@ -194,7 +194,7 @@ const isNetworkError = (error: unknown) => {
 function App() {
   const [savedPhoneNumber, setSavedPhoneNumber] = useState(() => localStorage.getItem(savedPhoneNumberKey) || '');
   const [number, setNumber] = useState(() => localStorage.getItem(savedPhoneNumberKey) || '');
-  const [senderId, setSenderId] = useState('GNETRA');
+  const [senderId, setSenderId] = useState('DVRKRT');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<SmsLog[]>([]);
@@ -274,7 +274,7 @@ function App() {
       .order('created_at', { ascending: false })
       .limit(20);
     if (error) {
-      console.error('[SMS App] Failed to fetch SMS logs', error);
+      console.warn('[SMS App] SMS logs not available (table may not exist yet)', error.message);
     }
     if (data) setLogs(data);
   };
@@ -288,11 +288,11 @@ function App() {
       .limit(1)
       .maybeSingle();
     if (error) {
-      console.error('[SMS App] Failed to fetch SMS settings', error);
+      console.warn('[SMS App] SMS settings not available (table may not exist yet)', error.message);
     }
     if (data) {
       setApiKey(data.api_key || '');
-      setSenderId(data.sender_id || 'GNETRA');
+      setSenderId(data.sender_id || 'DVRKRT');
       setTemplateId(data.template_id || '');
       setBaseUrl(data.base_url || '');
     }
@@ -340,8 +340,8 @@ function App() {
 
     setLoading(true);
     const requestBody = {
-      number: number.trim(),
-      sender_id: senderId.trim() || 'GNETRA',
+      number: normalizePhoneNumber(number.trim()),
+      sender_id: senderId.trim() || 'DVRKRT',
       message: message.trim()
     };
 
@@ -380,20 +380,27 @@ function App() {
     };
 
     try {
-      if (supabaseConfigured) {
+      if (import.meta.env.DEV && smsProviderConfigured) {
+        console.log('[SMS App] Development mode: using direct SMS provider via proxy');
+        const providerResult = await trySendViaProvider(requestBody);
+        console.log('[SMS App] Provider response', providerResult);
+        setMessage('');
+      } else if (supabaseConfigured) {
         try {
           await sendViaSupabase();
         } catch (error) {
           if (isNetworkError(error) && smsProviderConfigured) {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
-            await trySendViaProvider(requestBody);
+            const providerResult = await trySendViaProvider(requestBody);
+            console.log('[SMS App] Provider response', providerResult);
             setMessage('');
           } else {
             throw error;
           }
         }
       } else if (smsProviderConfigured) {
-        await trySendViaProvider(requestBody);
+        const providerResult = await trySendViaProvider(requestBody);
+        console.log('[SMS App] Provider response', providerResult);
         setMessage('');
       } else {
         alert('Supabase is not configured and direct SMS provider settings are missing. Please configure one of them.');
@@ -427,8 +434,16 @@ function App() {
     }
   };
 
-  const generateOrderId = (): string => {
-    return Math.floor(Math.random() * 10000000000000).toString().padStart(13, '0');
+  const normalizePhoneNumber = (phone: string): string => {
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length === 10) {
+      return '91' + digits;
+    } else if (digits.length === 12 && digits.startsWith('91')) {
+      return digits;
+    } else if (digits.length === 11 && digits.startsWith('0')) {
+      return '91' + digits.substring(1);
+    }
+    return digits;
   };
 
   const generateAwb = (): string => {
@@ -436,6 +451,12 @@ function App() {
     const randomLetters = Array.from({ length: 4 }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
     const randomNumbers = Math.floor(Math.random() * 100000000000).toString().padStart(11, '0');
     return randomLetters + randomNumbers;
+  };
+
+  const generateOrderId = (): string => {
+    const timestamp = Date.now().toString().slice(-8);
+    const randomDigits = Math.floor(1000 + Math.random() * 9000).toString();
+    return `DV${timestamp}${randomDigits}`;
   };
 
   const generateOtp = (length: 4 | 6): string => {
@@ -457,8 +478,8 @@ function App() {
 
     const deliveryMessage = `Dvaarikart:Your order ${orderId} (AWB:${awb}) is out for delivery. Open Box Delivery OTP:${otp} valid till ${deliveryTime} today. Please share OTP after checking the product condition. Delivery Partner: Dvaarikart - GRAHNETRA AI LABS`;
     const requestBody = {
-      number: deliveryNumber.trim(),
-      sender_id: 'GNETRA',
+      number: normalizePhoneNumber(deliveryNumber.trim()),
+      sender_id: 'DVRKRT',
       message: deliveryMessage,
       order_id: orderId,
       awb: awb,
@@ -505,20 +526,27 @@ function App() {
     };
 
     try {
-      if (supabaseConfigured) {
+      if (import.meta.env.DEV && smsProviderConfigured) {
+        console.log('[SMS App] Development mode: using direct SMS provider via proxy for delivery');
+        const providerResult = await trySendViaProvider(requestBody);
+        console.log('[SMS App] Provider response', providerResult);
+        alert(`Delivery SMS sent successfully!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
+      } else if (supabaseConfigured) {
         try {
           await sendViaSupabase();
         } catch (error) {
           if (isNetworkError(error) && smsProviderConfigured) {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
-            await trySendViaProvider(requestBody);
+            const providerResult = await trySendViaProvider(requestBody);
+            console.log('[SMS App] Provider response', providerResult);
             alert(`Delivery SMS sent successfully via direct provider!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
           } else {
             throw error;
           }
         }
       } else if (smsProviderConfigured) {
-        await trySendViaProvider(requestBody);
+        const providerResult = await trySendViaProvider(requestBody);
+        console.log('[SMS App] Provider response', providerResult);
         alert(`Delivery SMS sent successfully via direct provider!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
       } else {
         alert('Supabase is not configured and direct SMS provider settings are missing. Please configure one of them.');
@@ -541,8 +569,8 @@ function App() {
 
     const deliveryMessage = `Dvaarikart:Your order ${delivery.orderId} (AWB:${delivery.awb}) is out for delivery. Open Box Delivery OTP:${delivery.otp} valid till ${delivery.validTill} today. Please share OTP after checking the product condition. Delivery Partner: Dvaarikart - GRAHNETRA AI LABS`;
     const requestBody = {
-      number: deliveryNumber.trim(),
-      sender_id: 'GNETRA',
+      number: normalizePhoneNumber(deliveryNumber.trim()),
+      sender_id: 'DVRKRT',
       message: deliveryMessage,
       button_clicked: delivery.label,
       order_id: delivery.orderId,
@@ -578,20 +606,27 @@ function App() {
     };
 
     try {
-      if (supabaseConfigured) {
+      if (import.meta.env.DEV && smsProviderConfigured) {
+        console.log('[SMS App] Development mode: using direct SMS provider via proxy for fixed delivery');
+        const providerResult = await trySendViaProvider(requestBody);
+        console.log('[SMS App] Provider response', providerResult);
+        alert(`Prefix Delivery SMS sent!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
+      } else if (supabaseConfigured) {
         try {
           await sendViaSupabase();
         } catch (error) {
           if (isNetworkError(error) && smsProviderConfigured) {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
-            await trySendViaProvider(requestBody);
+            const providerResult = await trySendViaProvider(requestBody);
+            console.log('[SMS App] Provider response', providerResult);
             alert(`Prefix Delivery SMS sent via direct provider!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
           } else {
             throw error;
           }
         }
       } else if (smsProviderConfigured) {
-        await trySendViaProvider(requestBody);
+        const providerResult = await trySendViaProvider(requestBody);
+        console.log('[SMS App] Provider response', providerResult);
         alert(`Prefix Delivery SMS sent via direct provider!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
       } else {
         alert('Supabase is not configured and direct SMS provider settings are missing. Please configure one of them.');
@@ -785,7 +820,7 @@ function App() {
                     value={senderId}
                     onChange={(e) => setSenderId(e.target.value)}
                     className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                    placeholder="GNETRA"
+                    placeholder="DVRKRT"
                   />
                 </div>
 
@@ -857,11 +892,11 @@ function App() {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">Sender ID</label>
                   <select
-                    value="GNETRA"
+                    value="DVRKRT"
                     disabled
                     className="w-full px-4 py-3 border border-slate-300 rounded-lg bg-slate-50 text-slate-700"
                   >
-                    <option value="GNETRA">GNETRA (verified)</option>
+                    <option value="DVRKRT">DVRKRT (verified)</option>
                   </select>
                 </div>
 
@@ -929,11 +964,11 @@ function App() {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">Sender ID</label>
                   <select
-                    value="GNETRA"
+                    value="DVRKRT"
                     disabled
                     className="w-full px-4 py-3 border border-slate-300 rounded-lg bg-slate-50 text-slate-700"
                   >
-                    <option value="GNETRA">GNETRA (verified)</option>
+                    <option value="DVRKRT">DVRKRT (verified)</option>
                   </select>
                 </div>
 
