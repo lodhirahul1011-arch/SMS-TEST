@@ -205,11 +205,11 @@ Deno.serve(async (req: Request) => {
     }
 
     // Check if API credentials are configured
-    if (!apiKey || !baseUrl) {
+    if (!apiKey || !baseUrl || !templateId) {
       console.error(`[send-sms:${requestId}] SMS API not configured`, {
         hasApiKey: Boolean(apiKey),
         hasBaseUrl: Boolean(baseUrl),
-        templateId: templateId || 'missing',
+        hasTemplateId: Boolean(templateId),
         senderId
       });
 
@@ -224,7 +224,7 @@ Deno.serve(async (req: Request) => {
         awb: payload.awb || null,
         otp: payload.otp || null,
         valid_till: payload.valid_till || null,
-        provider_response: { error: 'SMS API not configured. Please save API key and base URL in settings, or set Supabase SMS_* secrets.' }
+        provider_response: { error: 'SMS API not configured. Please save API key, template ID, and base URL in settings, or set Supabase SMS_* secrets.' }
       };
 
       let { data: logEntry, error: logError } = await supabase
@@ -251,7 +251,7 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'SMS API not configured. Please save API key and base URL in settings, or set Supabase SMS_* secrets.',
+          error: 'SMS API not configured. Please save API key, template ID, and base URL in settings, or set Supabase SMS_* secrets.',
           log_id: logEntry?.id
         }),
         {

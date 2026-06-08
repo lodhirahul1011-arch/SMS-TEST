@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { supabase, isSupabaseConfigured } from './lib/supabase';
+import { supabase, isSupabaseConfigured, supabasePublicKey, supabaseUrl } from './lib/supabase';
 import {
   CheckCircle,
   Clipboard,
@@ -49,6 +49,17 @@ interface FixedDelivery {
 }
 
 type DeliveryIdentifierType = 'orderId' | 'awb';
+
+interface SendSmsPayload {
+  number: string;
+  sender_id: string;
+  message: string;
+  button_clicked?: string;
+  order_id?: string;
+  awb?: string;
+  otp?: string;
+  valid_till?: string;
+}
 
 const savedPhoneNumberKey = 'sms-lab-phone-number';
 
@@ -115,14 +126,16 @@ const safeJson = async (response: Response) => {
   }
 };
 
-const smsProviderBaseUrl = import.meta.env.VITE_SMS_BASE_URL || 'https://smsfortius.org/V2/apikey.php';
-const smsProviderApiKey = import.meta.env.VITE_SMS_API_KEY || '';
-const smsProviderTemplateId = import.meta.env.VITE_SMS_TEMPLATE_ID || '';
+const smsProviderBaseUrl = import.meta.env.DEV
+  ? import.meta.env.VITE_SMS_BASE_URL || 'https://smsfortius.org/V2/apikey.php'
+  : '';
+const smsProviderApiKey = import.meta.env.DEV ? import.meta.env.VITE_SMS_API_KEY || '' : '';
+const smsProviderTemplateId = import.meta.env.DEV ? import.meta.env.VITE_SMS_TEMPLATE_ID || '' : '';
 const hasSmsProviderConfig = Boolean(smsProviderApiKey && smsProviderTemplateId && smsProviderBaseUrl);
 const isDevProxyEnabled = import.meta.env.DEV && Boolean(smsProviderBaseUrl && smsProviderApiKey && smsProviderTemplateId);
 
 const buildSmsProviderUrl = (number: string, message: string, senderId: string) => {
-  if (!hasSmsProviderConfig) return null;
+  if (!isDevProxyEnabled) return null;
   const params = new URLSearchParams({
     apikey: smsProviderApiKey,
     senderid: senderId,
@@ -131,11 +144,7 @@ const buildSmsProviderUrl = (number: string, message: string, senderId: string) 
     message
   });
 
-  if (isDevProxyEnabled) {
-    return `/api/sms-provider?${params.toString()}`;
-  }
-
-  return `${smsProviderBaseUrl}?${params.toString()}`;
+  return `/api/sms-provider?${params.toString()}`;
 };
 
 const sendViaSmsProvider = async (url: string) => {
@@ -170,7 +179,7 @@ const sendViaSmsProvider = async (url: string) => {
 const trySendViaProvider = async (body: { number: string; message: string; sender_id: string }) => {
   const providerUrl = buildSmsProviderUrl(body.number, body.message || '', body.sender_id || 'DVRKRT');
   if (!providerUrl) {
-    throw new Error('SMS provider configuration is incomplete. Please set VITE_SMS_API_KEY, VITE_SMS_TEMPLATE_ID, and VITE_SMS_BASE_URL.');
+    throw new Error('Direct SMS provider calls are only available in local development through the Vite proxy.');
   }
 
   const providerResult = await sendViaSmsProvider(providerUrl);
@@ -189,6 +198,51 @@ const trySendViaProvider = async (body: { number: string; message: string; sende
 const isNetworkError = (error: unknown) => {
   if (!(error instanceof Error)) return false;
   return /Failed to fetch|NetworkError|ENOTFOUND|getaddrinfo|DNS/.test(error.message);
+};
+
+const getSupabaseConfigurationError = () =>
+  'Supabase is not configured for this deployment. Set VITE_SUPABASE_URL and either VITE_SUPABASE_ANON_KEY or VITE_SUPABASE_PUBLISHABLE_KEY.';
+
+const sendViaSupabaseFunction = async (
+  requestBody: SendSmsPayload,
+  logContext: Record<string, unknown>
+) => {
+  if (!supabaseUrl || !supabasePublicKey || !supabase) {
+    throw new Error(getSupabaseConfigurationError());
+  }
+
+  console.log('[SMS App] Sending SMS request via Supabase Edge Function', {
+    endpoint: `${supabaseUrl}/functions/v1/send-sms`,
+    hasSupabasePublicKey: Boolean(supabasePublicKey),
+    ...logContext
+  });
+
+  const { data: result, error } = await supabase.functions.invoke('send-sms', {
+    body: requestBody
+  });
+
+  if (error) {
+    const responseContext =
+      typeof error === 'object' &&
+      error !== null &&
+      'context' in error &&
+      error.context instanceof Response
+        ? error.context
+        : null;
+
+    if (responseContext) {
+      const { parsed, raw } = await safeJson(responseContext);
+      throw new Error(parsed?.error || parsed?.details || raw || error.message);
+    }
+
+    throw new Error(error.message);
+  }
+
+  if (!result?.success) {
+    throw new Error(result?.error || 'Failed to send SMS');
+  }
+
+  return result;
 };
 
 function App() {
@@ -212,8 +266,6 @@ function App() {
   const [confirmOrderId, setConfirmOrderId] = useState('');
   const [selectedIdentifierType, setSelectedIdentifierType] = useState<DeliveryIdentifierType>('orderId');
   const supabaseConfigured = isSupabaseConfigured;
-  const smsProviderConfigured = hasSmsProviderConfig;
-  const directProviderFallback = !supabaseConfigured && smsProviderConfigured;
 
   const selectedIdentifierLabel = selectedIdentifierType === 'orderId' ? 'Order ID' : 'AWB';
   const selectedIdentifierValue = selectedFixedDelivery
@@ -230,21 +282,28 @@ function App() {
       fetchLogs();
       fetchSettings();
     } else {
-      console.warn('[SMS App] Supabase environment variables are not configured.');
+      console.warn(
+        '[SMS App] Supabase environment variables are not configured. Set VITE_SUPABASE_URL and either VITE_SUPABASE_ANON_KEY or VITE_SUPABASE_PUBLISHABLE_KEY.'
+      );
     }
 
-    const envApiKey = import.meta.env.VITE_SMS_API_KEY;
-    const envSenderId = import.meta.env.VITE_SMS_SENDER_ID;
-    const envTemplateId = import.meta.env.VITE_SMS_TEMPLATE_ID;
-    const envBaseUrl = import.meta.env.VITE_SMS_BASE_URL;
+    const envApiKey = import.meta.env.DEV ? import.meta.env.VITE_SMS_API_KEY : '';
+    const envSenderId = import.meta.env.DEV ? import.meta.env.VITE_SMS_SENDER_ID : '';
+    const envTemplateId = import.meta.env.DEV ? import.meta.env.VITE_SMS_TEMPLATE_ID : '';
+    const envBaseUrl = import.meta.env.DEV ? import.meta.env.VITE_SMS_BASE_URL : '';
 
     console.log('[SMS App] Runtime config check', {
-      supabaseUrl: import.meta.env.VITE_SUPABASE_URL || 'missing',
-      anonKey: maskValue(import.meta.env.VITE_SUPABASE_ANON_KEY),
-      smsApiKey: maskValue(envApiKey),
-      smsSenderId: envSenderId || 'missing',
-      smsTemplateId: envTemplateId || 'missing',
-      smsBaseUrl: envBaseUrl || 'missing'
+      supabaseUrl: supabaseUrl || 'missing',
+      supabasePublicKey: maskValue(supabasePublicKey),
+      supabaseKeySource: import.meta.env.VITE_SUPABASE_ANON_KEY
+        ? 'anon'
+        : import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+          ? 'publishable'
+          : 'missing',
+      smsApiKey: import.meta.env.DEV ? maskValue(envApiKey) : 'dev-only',
+      smsSenderId: import.meta.env.DEV ? envSenderId || 'missing' : 'dev-only',
+      smsTemplateId: import.meta.env.DEV ? envTemplateId || 'missing' : 'dev-only',
+      smsBaseUrl: import.meta.env.DEV ? envBaseUrl || 'missing' : 'dev-only'
     });
 
     if (envApiKey) setApiKey(envApiKey);
@@ -346,41 +405,18 @@ function App() {
     };
 
     const sendViaSupabase = async () => {
-      const endpoint = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`;
-      console.log('[SMS App] Sending manual SMS request', {
-        endpoint,
+      await sendViaSupabaseFunction(requestBody, {
+        action: 'manual',
         number: requestBody.number,
         senderId: requestBody.sender_id,
-        messageLength: requestBody.message.length,
-        hasAnonKey: Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY)
+        messageLength: requestBody.message.length
       });
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      const { parsed: result, raw } = await safeJson(response);
-      if (!response.ok) {
-        const errorMessage = result?.error || raw || `Server returned ${response.status}`;
-        throw new Error(errorMessage);
-      }
-
-      if (result?.success) {
-        setMessage('');
-        fetchLogs();
-        return true;
-      }
-      alert(result?.error || raw || 'Failed to send SMS');
-      return false;
+      setMessage('');
+      fetchLogs();
     };
 
     try {
-      if (import.meta.env.DEV && smsProviderConfigured) {
+      if (isDevProxyEnabled) {
         console.log('[SMS App] Development mode: using direct SMS provider via proxy');
         const providerResult = await trySendViaProvider(requestBody);
         console.log('[SMS App] Provider response', providerResult);
@@ -389,7 +425,7 @@ function App() {
         try {
           await sendViaSupabase();
         } catch (error) {
-          if (isNetworkError(error) && smsProviderConfigured) {
+          if (import.meta.env.DEV && isNetworkError(error) && hasSmsProviderConfig) {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
             const providerResult = await trySendViaProvider(requestBody);
             console.log('[SMS App] Provider response', providerResult);
@@ -398,12 +434,8 @@ function App() {
             throw error;
           }
         }
-      } else if (smsProviderConfigured) {
-        const providerResult = await trySendViaProvider(requestBody);
-        console.log('[SMS App] Provider response', providerResult);
-        setMessage('');
       } else {
-        alert('Supabase is not configured and direct SMS provider settings are missing. Please configure one of them.');
+        throw new Error(getSupabaseConfigurationError());
       }
     } catch (error) {
       console.error('[SMS App] Error sending manual SMS:', error);
@@ -488,45 +520,22 @@ function App() {
     };
 
     const sendViaSupabase = async () => {
-      const endpoint = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`;
-      console.log('[SMS App] Sending delivery OTP SMS request', {
-        endpoint,
+      await sendViaSupabaseFunction(requestBody, {
+        action: 'delivery',
         number: requestBody.number,
         senderId: requestBody.sender_id,
         orderId,
         awb,
         otp,
         validTill: deliveryTime,
-        messageLength: deliveryMessage.length,
-        hasAnonKey: Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY)
+        messageLength: deliveryMessage.length
       });
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      const { parsed: result, raw } = await safeJson(response);
-      if (!response.ok) {
-        const errorMessage = result?.error || raw || `Server returned ${response.status}`;
-        throw new Error(errorMessage);
-      }
-
-      if (result?.success) {
-        alert(`Delivery SMS sent successfully!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
-        fetchLogs();
-        return;
-      }
-
-      throw new Error(result?.error || raw || 'Failed to send delivery SMS');
+      alert(`Delivery SMS sent successfully!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
+      fetchLogs();
     };
 
     try {
-      if (import.meta.env.DEV && smsProviderConfigured) {
+      if (isDevProxyEnabled) {
         console.log('[SMS App] Development mode: using direct SMS provider via proxy for delivery');
         const providerResult = await trySendViaProvider(requestBody);
         console.log('[SMS App] Provider response', providerResult);
@@ -535,7 +544,7 @@ function App() {
         try {
           await sendViaSupabase();
         } catch (error) {
-          if (isNetworkError(error) && smsProviderConfigured) {
+          if (import.meta.env.DEV && isNetworkError(error) && hasSmsProviderConfig) {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
             const providerResult = await trySendViaProvider(requestBody);
             console.log('[SMS App] Provider response', providerResult);
@@ -544,12 +553,8 @@ function App() {
             throw error;
           }
         }
-      } else if (smsProviderConfigured) {
-        const providerResult = await trySendViaProvider(requestBody);
-        console.log('[SMS App] Provider response', providerResult);
-        alert(`Delivery SMS sent successfully via direct provider!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
       } else {
-        alert('Supabase is not configured and direct SMS provider settings are missing. Please configure one of them.');
+        throw new Error(getSupabaseConfigurationError());
       }
     } catch (error) {
       console.error('[SMS App] Error sending delivery SMS:', error);
@@ -580,33 +585,23 @@ function App() {
     };
 
     const sendViaSupabase = async () => {
-      const endpoint = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`;
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify(requestBody)
+      await sendViaSupabaseFunction(requestBody, {
+        action: 'prefix-delivery',
+        number: requestBody.number,
+        senderId: requestBody.sender_id,
+        buttonClicked: delivery.label,
+        orderId: delivery.orderId,
+        awb: delivery.awb,
+        otp: delivery.otp,
+        validTill: delivery.validTill,
+        messageLength: deliveryMessage.length
       });
-
-      const { parsed: result, raw } = await safeJson(response);
-      if (!response.ok) {
-        const errorMessage = result?.error || raw || `Server returned ${response.status}`;
-        throw new Error(errorMessage);
-      }
-
-      if (result?.success) {
-        alert(`Prefix Delivery SMS sent!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
-        fetchLogs();
-        return;
-      }
-
-      throw new Error(result?.error || raw || 'Failed to send prefix delivery SMS');
+      alert(`Prefix Delivery SMS sent!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
+      fetchLogs();
     };
 
     try {
-      if (import.meta.env.DEV && smsProviderConfigured) {
+      if (isDevProxyEnabled) {
         console.log('[SMS App] Development mode: using direct SMS provider via proxy for fixed delivery');
         const providerResult = await trySendViaProvider(requestBody);
         console.log('[SMS App] Provider response', providerResult);
@@ -615,7 +610,7 @@ function App() {
         try {
           await sendViaSupabase();
         } catch (error) {
-          if (isNetworkError(error) && smsProviderConfigured) {
+          if (import.meta.env.DEV && isNetworkError(error) && hasSmsProviderConfig) {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
             const providerResult = await trySendViaProvider(requestBody);
             console.log('[SMS App] Provider response', providerResult);
@@ -624,12 +619,8 @@ function App() {
             throw error;
           }
         }
-      } else if (smsProviderConfigured) {
-        const providerResult = await trySendViaProvider(requestBody);
-        console.log('[SMS App] Provider response', providerResult);
-        alert(`Prefix Delivery SMS sent via direct provider!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
       } else {
-        alert('Supabase is not configured and direct SMS provider settings are missing. Please configure one of them.');
+        throw new Error(getSupabaseConfigurationError());
       }
     } catch (error) {
       console.error('[SMS App] Error sending prefix delivery SMS:', error);
@@ -669,7 +660,7 @@ function App() {
 
         {!supabaseConfigured && (
           <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 mb-6 text-amber-900">
-            Supabase is not configured. SMS can still be sent through the direct provider if <code>VITE_SMS_API_KEY</code>, <code>VITE_SMS_TEMPLATE_ID</code>, and <code>VITE_SMS_BASE_URL</code> are set.
+            Supabase is not configured for this deployment. Add <code>VITE_SUPABASE_URL</code> and either <code>VITE_SUPABASE_ANON_KEY</code> or <code>VITE_SUPABASE_PUBLISHABLE_KEY</code>. Direct SMS provider calls are restricted to local development.
           </div>
         )}
 
