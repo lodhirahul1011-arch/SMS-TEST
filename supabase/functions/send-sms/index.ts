@@ -113,10 +113,26 @@ Deno.serve(async (req: Request) => {
     }
 
     // Prefer Supabase secrets, then fall back to the settings saved from the app UI.
-    const apiKey = Deno.env.get('SMS_API_KEY') || savedSettings?.api_key || '';
-    const templateId = Deno.env.get('SMS_TEMPLATE_ID') || savedSettings?.template_id || '';
-    const baseUrl = Deno.env.get('SMS_BASE_URL') || savedSettings?.base_url || 'https://smsfortius.org/V2/apikey.php';
-    const defaultSenderId = Deno.env.get('SMS_SENDER_ID') || savedSettings?.sender_id || 'GNETRA';
+    const apiKey =
+      Deno.env.get('SMS_API_KEY') ||
+      Deno.env.get('VITE_SMS_API_KEY') ||
+      savedSettings?.api_key ||
+      '';
+    const templateId =
+      Deno.env.get('SMS_TEMPLATE_ID') ||
+      Deno.env.get('VITE_SMS_TEMPLATE_ID') ||
+      savedSettings?.template_id ||
+      '';
+    const baseUrl =
+      Deno.env.get('SMS_BASE_URL') ||
+      Deno.env.get('VITE_SMS_BASE_URL') ||
+      savedSettings?.base_url ||
+      'https://smsfortius.org/V2/apikey.php';
+    const defaultSenderId =
+      Deno.env.get('SMS_SENDER_ID') ||
+      Deno.env.get('VITE_SMS_SENDER_ID') ||
+      savedSettings?.sender_id ||
+      'GNETRA';
 
     const payload: SendSmsRequest = await req.json();
     const senderId = (payload.sender_id || defaultSenderId || '').trim();

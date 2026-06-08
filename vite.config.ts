@@ -7,4 +7,14 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['lucide-react'],
   },
+  server: {
+    proxy: {
+      '/api/sms-provider': {
+        target: 'https://smsfortius.org',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/api\/sms-provider/, '/V2/apikey.php')
+      }
+    }
+  }
 });
