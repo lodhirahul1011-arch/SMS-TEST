@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/server.js",
   "scripts": {
+    "build": "node -e \"console.log('Backend build step not required')\"",
     "dev": "node --watch src/server.js",
     "start": "node src/server.js"
   },
