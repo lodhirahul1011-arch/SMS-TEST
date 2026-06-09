@@ -557,7 +557,7 @@ function App() {
     }
     setShowSettings(false);
   };
-
+// jj
   const sendSms = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!number.trim()) return;
