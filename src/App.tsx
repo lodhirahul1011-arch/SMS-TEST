@@ -28,6 +28,14 @@ interface SmsLog {
     status?: string;
     message?: string;
     error?: string;
+    response_text?: string;
+    success?: boolean;
+    response_data?: {
+      description?: string;
+      status?: string;
+      message?: string;
+      code?: string;
+    } | null;
   } | null;
   message_id: string | null;
   created_at: string;
@@ -59,6 +67,13 @@ interface SendSmsPayload {
   awb?: string;
   otp?: string;
   valid_till?: string;
+}
+
+interface SmsSettingsRecord {
+  api_key?: string | null;
+  sender_id?: string | null;
+  template_id?: string | null;
+  base_url?: string | null;
 }
 
 const savedPhoneNumberKey = 'sms-lab-phone-number';
@@ -131,8 +146,79 @@ const smsProviderBaseUrl = import.meta.env.DEV
   : '';
 const smsProviderApiKey = import.meta.env.DEV ? import.meta.env.VITE_SMS_API_KEY || '' : '';
 const smsProviderTemplateId = import.meta.env.DEV ? import.meta.env.VITE_SMS_TEMPLATE_ID || '' : '';
+const backendApiBaseUrl = (
+  import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://127.0.0.1:5000' : '')
+).replace(/\/$/, '');
 const hasSmsProviderConfig = Boolean(smsProviderApiKey && smsProviderTemplateId && smsProviderBaseUrl);
 const isDevProxyEnabled = import.meta.env.DEV && Boolean(smsProviderBaseUrl && smsProviderApiKey && smsProviderTemplateId);
+const hasBackendApi = Boolean(backendApiBaseUrl);
+
+const getBackendApiUrl = (path: string) => {
+  if (!backendApiBaseUrl) {
+    throw new Error('Backend API URL is not configured.');
+  }
+
+  return `${backendApiBaseUrl}${path}`;
+};
+
+const extractTextField = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null);
+
+const parseJsonRecord = (value: unknown) => {
+  if (typeof value !== 'string') return null;
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+};
+
+const getProviderDescription = (providerResponse: SmsLog['provider_response'] | Record<string, unknown> | null | undefined) => {
+  if (!providerResponse || typeof providerResponse !== 'object') return null;
+
+  const directDescription =
+    extractTextField(providerResponse.description) ||
+    extractTextField(providerResponse.message) ||
+    extractTextField(providerResponse.status);
+
+  if (directDescription) return directDescription;
+
+  const nestedResponse = providerResponse.response_data;
+  if (nestedResponse && typeof nestedResponse === 'object') {
+    const nestedDescription =
+      extractTextField(nestedResponse.description) ||
+      extractTextField(nestedResponse.message) ||
+      extractTextField(nestedResponse.status);
+
+    if (nestedDescription) return nestedDescription;
+  }
+
+  const parsedText = parseJsonRecord(providerResponse.response_text);
+  if (parsedText) {
+    return (
+      extractTextField(parsedText.description) ||
+      extractTextField(parsedText.message) ||
+      extractTextField(parsedText.status)
+    );
+  }
+
+  return extractTextField(providerResponse.response_text);
+};
+
+const buildSubmissionAlert = (title: string, details: string[], providerDescription?: string | null) => {
+  const providerLine = providerDescription
+    ? `Provider: ${providerDescription}`
+    : 'Provider accepted the request.';
+
+  return [
+    title,
+    ...details,
+    '',
+    providerLine,
+    'Delivery to the handset is not confirmed yet.'
+  ].join('\n');
+};
 
 const buildSmsProviderUrl = (number: string, message: string, senderId: string) => {
   if (!isDevProxyEnabled) return null;
@@ -203,6 +289,29 @@ const isNetworkError = (error: unknown) => {
 const getSupabaseConfigurationError = () =>
   'Supabase is not configured for this deployment. Set VITE_SUPABASE_URL and either VITE_SUPABASE_ANON_KEY or VITE_SUPABASE_PUBLISHABLE_KEY.';
 
+const sendViaBackendApi = async <T,>(path: string, init?: RequestInit) => {
+  if (!hasBackendApi) {
+    throw new Error('Backend API is not configured.');
+  }
+
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(getBackendApiUrl(path), {
+    ...init,
+    headers
+  });
+  const { parsed, raw } = await safeJson(response);
+
+  if (!response.ok) {
+    throw new Error(parsed?.error || raw || `Backend API returned HTTP ${response.status}`);
+  }
+
+  return parsed as T;
+};
+
 const sendViaSupabaseFunction = async (
   requestBody: SendSmsPayload,
   logContext: Record<string, unknown>
@@ -250,6 +359,23 @@ const sendViaSupabaseFunction = async (
   return parsed;
 };
 
+const applySmsSettings = (
+  settings: SmsSettingsRecord | null | undefined,
+  setters: {
+    setApiKey: (value: string) => void;
+    setSenderId: (value: string) => void;
+    setTemplateId: (value: string) => void;
+    setBaseUrl: (value: string) => void;
+  }
+) => {
+  if (!settings) return;
+
+  setters.setApiKey(settings.api_key || '');
+  setters.setSenderId(settings.sender_id || 'DVRKRT');
+  setters.setTemplateId(settings.template_id || '');
+  setters.setBaseUrl(settings.base_url || '');
+};
+
 function App() {
   const [savedPhoneNumber, setSavedPhoneNumber] = useState(() => localStorage.getItem(savedPhoneNumberKey) || '');
   const [number, setNumber] = useState(() => localStorage.getItem(savedPhoneNumberKey) || '');
@@ -283,12 +409,12 @@ function App() {
   );
 
   useEffect(() => {
-    if (supabaseConfigured) {
+    if (hasBackendApi || supabaseConfigured) {
       fetchLogs();
       fetchSettings();
     } else {
       console.warn(
-        '[SMS App] Supabase environment variables are not configured. Set VITE_SUPABASE_URL and either VITE_SUPABASE_ANON_KEY or VITE_SUPABASE_PUBLISHABLE_KEY.'
+        '[SMS App] Neither backend nor Supabase is configured. Set VITE_BACKEND_URL or the Supabase environment variables.'
       );
     }
 
@@ -298,6 +424,7 @@ function App() {
     const envBaseUrl = import.meta.env.DEV ? import.meta.env.VITE_SMS_BASE_URL : '';
 
     console.log('[SMS App] Runtime config check', {
+      backendApiUrl: backendApiBaseUrl || 'missing',
       supabaseUrl: supabaseUrl || 'missing',
       supabasePublicKey: maskValue(supabasePublicKey),
       supabaseKeySource: import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -330,6 +457,16 @@ function App() {
   const isDeliveryNumberSaved = deliveryNumber.trim() !== '' && deliveryNumber.trim() === savedPhoneNumber;
 
   const fetchLogs = async () => {
+    if (hasBackendApi) {
+      try {
+        const response = await sendViaBackendApi<{ success: boolean; data: SmsLog[] }>('/api/sms/logs?limit=20');
+        setLogs(response.data || []);
+        return;
+      } catch (error) {
+        console.warn('[SMS App] Backend SMS logs unavailable', error);
+      }
+    }
+
     if (!supabaseConfigured || !supabase) return;
 
     const { data, error } = await supabase
@@ -344,6 +481,16 @@ function App() {
   };
 
   const fetchSettings = async () => {
+    if (hasBackendApi) {
+      try {
+        const response = await sendViaBackendApi<{ success: boolean; data: SmsSettingsRecord }>('/api/sms/settings');
+        applySmsSettings(response.data, { setApiKey, setSenderId, setTemplateId, setBaseUrl });
+        return;
+      } catch (error) {
+        console.warn('[SMS App] Backend SMS settings unavailable', error);
+      }
+    }
+
     if (!supabaseConfigured || !supabase) return;
 
     const { data, error } = await supabase
@@ -355,16 +502,29 @@ function App() {
       console.warn('[SMS App] SMS settings not available (table may not exist yet)', error.message);
     }
     if (data) {
-      setApiKey(data.api_key || '');
-      setSenderId(data.sender_id || 'DVRKRT');
-      setTemplateId(data.template_id || '');
-      setBaseUrl(data.base_url || '');
+      applySmsSettings(data, { setApiKey, setSenderId, setTemplateId, setBaseUrl });
     }
   };
 
   const saveSettings = async () => {
+    if (hasBackendApi) {
+      const response = await sendViaBackendApi<{ success: boolean; data: SmsSettingsRecord }>('/api/sms/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          api_key: apiKey,
+          sender_id: senderId,
+          template_id: templateId,
+          base_url: baseUrl
+        })
+      });
+
+      applySmsSettings(response.data, { setApiKey, setSenderId, setTemplateId, setBaseUrl });
+      setShowSettings(false);
+      return;
+    }
+
     if (!supabaseConfigured || !supabase) {
-      alert('Supabase is not configured. Settings cannot be saved.');
+      alert('Neither backend nor Supabase is configured. Settings cannot be saved.');
       return;
     }
 
@@ -421,20 +581,55 @@ function App() {
     };
 
     try {
-      if (isDevProxyEnabled) {
+      if (hasBackendApi) {
+        console.log('[SMS App] Sending manual SMS via backend API');
+        const backendResult = await sendViaBackendApi<{
+          success: boolean;
+          warning?: string;
+          provider?: SmsLog['provider_response'];
+        }>('/api/sms/send', {
+          method: 'POST',
+          body: JSON.stringify(requestBody)
+        });
+        console.log('[SMS App] Backend response', backendResult);
+        setMessage('');
+        fetchLogs();
+        alert(
+          buildSubmissionAlert(
+            'SMS submitted to provider.',
+            [`Number: ${requestBody.number}`],
+            backendResult.warning || getProviderDescription(backendResult.provider)
+          )
+        );
+      } else if (isDevProxyEnabled) {
         console.log('[SMS App] Development mode: using direct SMS provider via proxy');
         const providerResult = await trySendViaProvider(requestBody);
         console.log('[SMS App] Provider response', providerResult);
         setMessage('');
+        alert(
+          buildSubmissionAlert(
+            'SMS submitted to provider.',
+            [`Number: ${requestBody.number}`],
+            getProviderDescription(providerResult.parsed as Record<string, unknown>)
+          )
+        );
       } else if (supabaseConfigured) {
         try {
           await sendViaSupabase();
+          alert(buildSubmissionAlert('SMS submitted to provider.', [`Number: ${requestBody.number}`]));
         } catch (error) {
           if (import.meta.env.DEV && isNetworkError(error) && hasSmsProviderConfig) {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
             const providerResult = await trySendViaProvider(requestBody);
             console.log('[SMS App] Provider response', providerResult);
             setMessage('');
+            alert(
+              buildSubmissionAlert(
+                'SMS submitted to provider.',
+                [`Number: ${requestBody.number}`],
+                getProviderDescription(providerResult.parsed as Record<string, unknown>)
+              )
+            );
           } else {
             throw error;
           }
@@ -464,6 +659,8 @@ function App() {
     switch (status.toLowerCase()) {
       case 'success':
         return <CheckCircle className="w-5 h-5 text-emerald-500" />;
+      case 'submitted':
+        return <Clock className="w-5 h-5 text-amber-500" />;
       case 'failed':
         return <XCircle className="w-5 h-5 text-red-500" />;
       default:
@@ -535,16 +732,48 @@ function App() {
         validTill: deliveryTime,
         messageLength: deliveryMessage.length
       });
-      alert(`Delivery SMS sent successfully!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
+      alert(
+        buildSubmissionAlert('Delivery SMS submitted to provider.', [
+          `Order ID: ${orderId}`,
+          `AWB: ${awb}`,
+          `OTP: ${otp}`,
+          `Valid Till: ${deliveryTime}`
+        ])
+      );
       fetchLogs();
     };
 
     try {
-      if (isDevProxyEnabled) {
+      if (hasBackendApi) {
+        console.log('[SMS App] Sending delivery SMS via backend API');
+        const backendResult = await sendViaBackendApi<{
+          success: boolean;
+          warning?: string;
+          provider?: SmsLog['provider_response'];
+        }>('/api/sms/send', {
+          method: 'POST',
+          body: JSON.stringify(requestBody)
+        });
+        console.log('[SMS App] Backend response', backendResult);
+        fetchLogs();
+        alert(
+          buildSubmissionAlert(
+            'Delivery SMS submitted to provider.',
+            [`Order ID: ${orderId}`, `AWB: ${awb}`, `OTP: ${otp}`, `Valid Till: ${deliveryTime}`],
+            backendResult.warning || getProviderDescription(backendResult.provider)
+          )
+        );
+      } else if (isDevProxyEnabled) {
         console.log('[SMS App] Development mode: using direct SMS provider via proxy for delivery');
         const providerResult = await trySendViaProvider(requestBody);
         console.log('[SMS App] Provider response', providerResult);
-        alert(`Delivery SMS sent successfully!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
+        alert(
+          buildSubmissionAlert(
+            'Delivery SMS submitted to provider.',
+            [`Order ID: ${orderId}`, `AWB: ${awb}`, `OTP: ${otp}`, `Valid Till: ${deliveryTime}`],
+            getProviderDescription(providerResult.parsed as Record<string, unknown>)
+          )
+        );
       } else if (supabaseConfigured) {
         try {
           await sendViaSupabase();
@@ -553,7 +782,13 @@ function App() {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
             const providerResult = await trySendViaProvider(requestBody);
             console.log('[SMS App] Provider response', providerResult);
-            alert(`Delivery SMS sent successfully via direct provider!\n\nOrder ID: ${orderId}\nAWB: ${awb}\nOTP: ${otp}\nValid Till: ${deliveryTime}`);
+            alert(
+              buildSubmissionAlert(
+                'Delivery SMS submitted to provider.',
+                [`Order ID: ${orderId}`, `AWB: ${awb}`, `OTP: ${otp}`, `Valid Till: ${deliveryTime}`],
+                getProviderDescription(providerResult.parsed as Record<string, unknown>)
+              )
+            );
           } else {
             throw error;
           }
@@ -601,16 +836,58 @@ function App() {
         validTill: delivery.validTill,
         messageLength: deliveryMessage.length
       });
-      alert(`Prefix Delivery SMS sent!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
+      alert(
+        buildSubmissionAlert('Prefix Delivery SMS submitted to provider.', [
+          `Order ID: ${delivery.orderId}`,
+          `AWB: ${delivery.awb}`,
+          `OTP: ${delivery.otp}`,
+          `Valid Till: ${delivery.validTill}`
+        ])
+      );
       fetchLogs();
     };
 
     try {
-      if (isDevProxyEnabled) {
+      if (hasBackendApi) {
+        console.log('[SMS App] Sending fixed delivery SMS via backend API');
+        const backendResult = await sendViaBackendApi<{
+          success: boolean;
+          warning?: string;
+          provider?: SmsLog['provider_response'];
+        }>('/api/sms/send', {
+          method: 'POST',
+          body: JSON.stringify(requestBody)
+        });
+        console.log('[SMS App] Backend response', backendResult);
+        fetchLogs();
+        alert(
+          buildSubmissionAlert(
+            'Prefix Delivery SMS submitted to provider.',
+            [
+              `Order ID: ${delivery.orderId}`,
+              `AWB: ${delivery.awb}`,
+              `OTP: ${delivery.otp}`,
+              `Valid Till: ${delivery.validTill}`
+            ],
+            backendResult.warning || getProviderDescription(backendResult.provider)
+          )
+        );
+      } else if (isDevProxyEnabled) {
         console.log('[SMS App] Development mode: using direct SMS provider via proxy for fixed delivery');
         const providerResult = await trySendViaProvider(requestBody);
         console.log('[SMS App] Provider response', providerResult);
-        alert(`Prefix Delivery SMS sent!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
+        alert(
+          buildSubmissionAlert(
+            'Prefix Delivery SMS submitted to provider.',
+            [
+              `Order ID: ${delivery.orderId}`,
+              `AWB: ${delivery.awb}`,
+              `OTP: ${delivery.otp}`,
+              `Valid Till: ${delivery.validTill}`
+            ],
+            getProviderDescription(providerResult.parsed as Record<string, unknown>)
+          )
+        );
       } else if (supabaseConfigured) {
         try {
           await sendViaSupabase();
@@ -619,7 +896,18 @@ function App() {
             console.warn('[SMS App] Supabase unreachable, falling back to direct provider', error);
             const providerResult = await trySendViaProvider(requestBody);
             console.log('[SMS App] Provider response', providerResult);
-            alert(`Prefix Delivery SMS sent via direct provider!\n\nOrder ID: ${delivery.orderId}\nAWB: ${delivery.awb}\nOTP: ${delivery.otp}\nValid Till: ${delivery.validTill}`);
+            alert(
+              buildSubmissionAlert(
+                'Prefix Delivery SMS submitted to provider.',
+                [
+                  `Order ID: ${delivery.orderId}`,
+                  `AWB: ${delivery.awb}`,
+                  `OTP: ${delivery.otp}`,
+                  `Valid Till: ${delivery.validTill}`
+                ],
+                getProviderDescription(providerResult.parsed as Record<string, unknown>)
+              )
+            );
           } else {
             throw error;
           }
@@ -663,9 +951,9 @@ function App() {
           <p className="text-slate-600">Send SMS messages instantly with real-time tracking</p>
         </div>
 
-        {!supabaseConfigured && (
+        {!supabaseConfigured && !hasBackendApi && !isDevProxyEnabled && (
           <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 mb-6 text-amber-900">
-            Supabase is not configured for this deployment. Add <code>VITE_SUPABASE_URL</code> and either <code>VITE_SUPABASE_ANON_KEY</code> or <code>VITE_SUPABASE_PUBLISHABLE_KEY</code>. Direct SMS provider calls are restricted to local development.
+            Neither backend nor Supabase is configured for this deployment. Add <code>VITE_BACKEND_URL</code> or configure the Supabase environment variables.
           </div>
         )}
 
@@ -1174,7 +1462,7 @@ function App() {
                       </div>
                       {log.provider_response && (
                         <div className="mt-2 text-xs text-slate-500 bg-slate-100 rounded-lg p-2">
-                          {log.provider_response.description || log.provider_response.status}
+                          {getProviderDescription(log.provider_response) || 'Provider response available'}
                         </div>
                       )}
                     </div>
