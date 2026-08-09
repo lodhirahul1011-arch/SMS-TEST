@@ -1228,7 +1228,7 @@ function App() {
                       value={deliveryNumber}
                       onChange={(e) => setDeliveryNumber(e.target.value)}
                       className="min-w-0 flex-1 px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                      placeholder="10-digit number (e.g. 8357032671)"
+                      placeholder="10-digit number (e.g. 9111111111)"
                       inputMode="numeric"
                       required
                     />
